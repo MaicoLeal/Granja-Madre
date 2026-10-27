@@ -1,0 +1,15 @@
+# Application source is maintained in sistema/.
+/publicacao-logo/
+/*.tar
+/logo-candidata.jpg
+**/node_modules/
+**/.git/
+**/.env*
+**/.sites-runtime/
+**/.wrangler/
+**/dist/
+**/.next/
+**/.vinext/
+**/outputs/
+**/work/
+*.tsbuildinfo

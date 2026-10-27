@@ -1,0 +1,34 @@
+import ts from 'typescript';
+import {readFileSync,writeFileSync,unlinkSync} from 'node:fs';
+import assert from 'node:assert/strict';
+const path=new URL('../db/model.test-runtime.mjs',import.meta.url);
+writeFileSync(path,ts.transpileModule(readFileSync(new URL('../db/model.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText);
+try{
+const {emptyState,applyCommand}=await import(path.href);
+let s=emptyState();const run=c=>s=applyCommand(s,c,'Tester');
+run({type:'member',name:'Operador de prueba',role:'Responsable'});const m=s.members[0].id;
+run({type:'lot',name:'Materia de prueba',category:'Materia prima',quantity:100,unit:'g',container:'R-001',location:'Almacén',responsible:m});const l=s.lots[0].id;
+assert.equal(s.lots[0].origin,'');assert.equal(s.lots[0].released,false);
+assert.throws(()=>run({type:'production',title:'Prueba',procedure:'initial',inputs:[{lotId:l,quantity:10}]}),/procedimiento/);
+run({type:'approve-procedure',id:'initial',reviewer:m});
+assert.throws(()=>run({type:'production',title:'Prueba',procedure:'initial',inputs:[{lotId:l,quantity:10}]}),/liberado/);
+run({type:'release',id:l});
+const before=JSON.stringify(s);assert.throws(()=>run({type:'production',title:'Prueba',procedure:'initial',inputs:[{lotId:l,quantity:60},{lotId:l,quantity:60}]}),/saldo/);assert.equal(JSON.stringify(s),before,'Failed multi-input command must leave original state intact');
+run({type:'production',title:'Prueba',procedure:'initial',inputs:[{lotId:l,quantity:10}]});const p=s.productions[0].id;assert.equal(s.lots[0].quantity,90);
+const start=new Date(Date.now()-3600000).toISOString(),end=new Date(Date.now()-1800000).toISOString();
+const step=name=>({type:'step',production:p,name,start,end,operator:m,participants:[],result:'Resultado de prueba',checks:[true,true,true]});
+assert.throws(()=>run(step('Envasado')),/siguiente/);
+assert.throws(()=>run({...step(s.procedures[0].steps[0]),checks:[false,true,true]}),/verificaciones/);
+for(const [i,name] of s.procedures[0].steps.entries())run({...step(name),start:new Date(Date.now()-3600000+i*120000).toISOString(),end:new Date(Date.now()-3600000+(i+1)*120000).toISOString()});
+run({type:'output',production:p,name:'Producto de prueba',category:'Producto terminado',quantity:5,unit:'unidades',container:'R-002',location:'Salida',responsible:m});const out=s.lots[1].id;assert.equal(s.lots[1].parents[0],p);
+assert.throws(()=>run({type:'donation',lotId:out,quantity:1,reference:'D-TEST'}),/liberado/);
+assert.throws(()=>run({type:'release',id:out}),/ficha/);
+run({type:'review',production:p,reviewer:m});run({type:'donation',lotId:out,quantity:2,reference:'D-TEST'});assert.equal(s.lots[1].quantity,3);
+assert.throws(()=>run({type:'donation',lotId:out,quantity:4,reference:'D-TEST'}),/saldo/);
+run({type:'correction',production:p,step:s.productions[0].steps[0].id,reason:'Corrección de prueba',notes:'Texto corregido'});assert.ok(s.audit.some(a=>a.action.includes('Observación anterior:')));
+assert.throws(()=>run({type:'adjust',lotId:l,quantity:-100,reason:'Prueba'}),/saldo/);
+run({type:'member-toggle',id:m});assert.throws(()=>run({type:'approve-procedure',id:'initial',reviewer:m}),/activo/);
+run({type:'member-toggle',id:m});run({type:'lot',name:'Decimal test',category:'Materia prima',quantity:0.3,unit:'g',container:'DEC',location:'Test',responsible:m});const decimal=s.lots.at(-1).id;
+run({type:'adjust',lotId:decimal,quantity:-0.1,reason:'Test'});run({type:'adjust',lotId:decimal,quantity:-0.2,reason:'Test'});assert.equal(s.lots.at(-1).quantity,0);
+console.log('PASS: inventory, release gates, atomic consumption, ordered stages, checks, output lineage, review, donations, corrections and inactive members.');
+}finally{unlinkSync(path);}

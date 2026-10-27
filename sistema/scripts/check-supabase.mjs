@@ -1,0 +1,10 @@
+import { readFileSync } from 'node:fs';
+const config = readFileSync(new URL('../lib/supabase-public.ts', import.meta.url), 'utf8');
+const url = config.match(/SUPABASE_PROJECT_URL = '([^']+)'/)?.[1];
+const key = config.match(/SUPABASE_PUBLISHABLE_KEY = '([^']+)'/)?.[1];
+if (!url || !key?.startsWith('sb_publishable_')) throw new Error('Configuração pública inválida.');
+const response = await fetch(url + '/auth/v1/settings', { headers: { apikey: key }, signal: AbortSignal.timeout(15000) });
+if (!response.ok) throw new Error('Conexão pública recusada: HTTP ' + response.status);
+const settings = await response.json();
+console.log(JSON.stringify({ project: new URL(url).hostname, authReachable: true, emailEnabled: settings.external?.email === true, signupDisabled: settings.disable_signup === true }));
+console.log('Este teste não verifica tabelas, RLS, login de usuários ou gravação de dados.');

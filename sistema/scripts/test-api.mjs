@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+const base='http://127.0.0.1:5173';
+const signin=await fetch(base+'/signin-with-chatgpt?return_to=/',{redirect:'manual'});
+const Cookie=signin.headers.getSetCookie().map(c=>c.split(';')[0]).join('; ');
+let response=await fetch(base+'/api/state',{headers:{Cookie}});assert.equal(response.status,200);let current=await response.json();
+async function command(c,expected=200,revision=current.revision){const r=await fetch(base+'/api/state',{method:'POST',headers:{'Content-Type':'application/json',Origin:base,Cookie},body:JSON.stringify({command:c,revision})});const value=await r.json();assert.equal(r.status,expected,JSON.stringify(value));if(r.ok)current=value;return value;}
+const suffix=Date.now().toString();
+await command({type:'member',name:'API test '+suffix,role:'Prueba local'});const m=current.state.members.at(-1).id;
+await command({type:'procedure',name:'Prueba de integración '+suffix,steps:['Etapa de prueba']});const procedure=current.state.procedures.at(-1).id;
+await command({type:'approve-procedure',id:procedure,reviewer:m});
+await command({type:'lot',name:'Material de prueba '+suffix,category:'Materia prima',quantity:100,unit:'g',container:'TEST',location:'Prueba local',responsible:m});const lot=current.state.lots.at(-1).id;
+await command({type:'release',id:lot});
+await command({type:'production',title:'Prueba local '+suffix,procedure,inputs:[{lotId:lot,quantity:101}]},400);
+await command({type:'production',title:'Prueba local '+suffix,procedure,inputs:[{lotId:lot,quantity:20}]});const p=current.state.productions.at(-1).id;
+await command({type:'step',production:p,name:'Etapa de prueba',start:new Date(Date.now()-600000).toISOString(),end:new Date(Date.now()-300000).toISOString(),operator:m,participants:[],result:'Verificado',checks:[true,true,true]});
+await command({type:'output',production:p,name:'Resultado de prueba',category:'Producto terminado',quantity:10,unit:'unidades',container:'TEST-OUT',location:'Prueba local',responsible:m});const result=current.state.lots.at(-1).id;
+await command({type:'review',production:p,reviewer:m});await command({type:'donation',lotId:result,quantity:2,reference:'TEST-ONLY'});
+await command({type:'adjust',lotId:result,quantity:-20,reason:'Test de saldo'},400);
+await command({type:'adjust',lotId:result,quantity:1,reason:'Test de revisión'},409,current.revision-1);
+const persisted=await (await fetch(base+'/api/state',{headers:{Cookie}})).json();assert.equal(persisted.revision,current.revision);assert.equal(persisted.state.lots.find(l=>l.id===result).quantity,8);assert.equal(persisted.state.lots.find(l=>l.id===lot).quantity,80);
+const blocked=await fetch(base+'/api/state',{method:'POST',headers:{'Content-Type':'application/json',Origin:'https://other.invalid',Cookie},body:JSON.stringify({command:{type:'member',name:'Blocked',role:'Blocked'},revision:current.revision})});assert.equal(blocked.status,403);
+console.log('PASS: HTTP → authenticated API → D1 persistence → production → review → donation; stock rejection, revision conflict and origin check. Local test records only.');

@@ -1,0 +1,4 @@
+[functions.production-api]
+# A função verifica o token com Supabase Auth getUser() antes de qualquer acesso.
+# Verificação própria permite utilizar as chaves assimétricas atuais do Auth.
+verify_jwt = false

@@ -1,0 +1,23 @@
+import {createClient} from 'npm:@supabase/supabase-js@2.117.2';
+import {applyCommand,emptyState} from '../_shared/model.ts';
+import {assertCommandAccess} from '../_shared/access.ts';
+const cors={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'authorization,apikey,content-type,x-client-info','Access-Control-Allow-Methods':'POST,OPTIONS'};
+const reply=(body:unknown,status=200)=>Response.json(body,{status,headers:{...cors,'Cache-Control':'no-store'}});
+Deno.serve(async(request:Request)=>{
+if(request.method==='OPTIONS')return new Response(null,{headers:cors});if(request.method!=='POST')return reply({error:'Método no permitido.'},405);
+const token=request.headers.get('Authorization')?.match(/^Bearer (.+)$/)?.[1];if(!token)return reply({error:'Inicie sesión.'},401);
+try{const url=Deno.env.get('SUPABASE_URL')||'',serviceKey=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')||'';if(!url||!serviceKey)return reply({error:'Servicio pendiente de configuración.'},503);
+const admin=createClient(url,serviceKey,{auth:{persistSession:false,autoRefreshToken:false}});const {data:{user},error:authError}=await admin.auth.getUser(token);if(authError||!user)return reply({error:'Sesión no válida.'},401);
+const text=await request.text();if(new TextEncoder().encode(text).length>100000)return reply({error:'Solicitud demasiado grande.'},413);const input=JSON.parse(text);
+let query=admin.from('gm_memberships').select('workspace_id,role,member_id').eq('user_id',user.id).eq('active',true);if(input.workspaceId)query=query.eq('workspace_id',input.workspaceId);const {data:memberships,error:membershipError}=await query.limit(2);
+if(membershipError)return reply({error:'Base de producción pendiente de configuración.'},503);if(!memberships?.length)return reply({error:'Su cuenta no tiene un vínculo activo con el equipo.'},403);if(memberships.length!==1)return reply({error:'Seleccione un espacio de trabajo.'},409);
+const membership=memberships[0],workspaceId=membership.workspace_id;const {data:row,error:readError}=await admin.from('gm_workspace_state').select('body,revision').eq('workspace_id',workspaceId).maybeSingle();if(readError)return reply({error:'No se pudo consultar la producción.'},503);const state=row?.body||emptyState(),revision=row?.revision||0;
+if(input.mode==='read')return reply({state,revision,workspaceId,memberRole:membership.role,operationalMemberId:membership.member_id});if(input.mode!=='command')return reply({error:'Operación no válida.'},400);
+if(membership.member_id&&!state.members.some((m:{id:string;active:boolean})=>m.id===membership.member_id&&m.active))return reply({error:'Su perfil operativo está inactivo.'},403);
+try{assertCommandAccess(membership.role,input.command,membership.member_id);}catch{return reply({error:'No tiene permiso o el responsable no corresponde a su perfil operativo.'},403);}if(!Number.isSafeInteger(input.revision)||input.revision!==revision)return reply({error:'Los datos cambiaron. Actualice y vuelva a intentar.'},409);
+if(input.command.type==='link-self-member'){const member=state.members.find((m:{id:string;active:boolean})=>m.id===input.command.memberId&&m.active);if(!member)return reply({error:'Seleccione un miembro activo.'},400);const {error}=await admin.from('gm_memberships').update({member_id:member.id}).eq('workspace_id',workspaceId).eq('user_id',user.id);if(error)return reply({error:'No se pudo vincular el perfil.'},503);return reply({state,revision,workspaceId,memberRole:membership.role,operationalMemberId:member.id});}
+const updated=applyCommand(state,input.command,user.email||user.id);
+if(!row){const {error}=await admin.from('gm_workspace_state').insert({workspace_id:workspaceId,body:updated,revision:1});if(error)return reply({error:'Los datos cambiaron o el banco no está configurado. Actualice y vuelva a intentar.'},409);}else{const {data:written,error}=await admin.from('gm_workspace_state').update({body:updated,revision:revision+1,updated_at:new Date().toISOString()}).eq('workspace_id',workspaceId).eq('revision',revision).select('revision');if(error)return reply({error:'No se pudo guardar el registro.'},503);if(written?.length!==1)return reply({error:'Los datos cambiaron. Actualice antes de guardar.'},409);}
+return reply({state:updated,revision:revision+1,workspaceId,memberRole:membership.role,operationalMemberId:membership.member_id});
+}catch(e){return reply({error:e instanceof Error&&e.name!=='ZodError'&&['No tiene permiso para realizar esta operación.','El responsable debe corresponder a su perfil operativo vinculado.'].includes(e.message)?e.message:'Revise los datos de la operación.'},400);}});
+
